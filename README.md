@@ -532,7 +532,6 @@ resource "aws_lb_listener" "listner" {
 ```sh
 ##################################################
 # Forwording rule - one
-#
 # Considering hostname as blog-one.com
 ###################################################
 resource "aws_lb_listener_rule" "rule-one" {
@@ -552,7 +551,6 @@ resource "aws_lb_listener_rule" "rule-one" {
 
 ##################################################
 # Forwording rule - two
-#
 # Considering hostname as blog-two.com
 ###################################################
 resource "aws_lb_listener_rule" "rule-two" {
