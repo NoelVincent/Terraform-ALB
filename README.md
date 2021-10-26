@@ -328,35 +328,297 @@ resource "aws_key_pair" "key" {
 }
 ```
 
+# 11. Creating a Application Load Balancer
+> A load balancer serves as the single point of contact for clients. The load balancer distributes incoming application traffic across multiple targets, such as EC2 instances, in multiple Availability Zones.
 
+The following diagram illustrates the basic components.
 
+![alt text](https://i.ibb.co/r33pSXG/Inked2-LI.jpg)
 
+| Concept | Description |
+| --- | --- |
+| Listeners | A Listener is a process that checks for connection requests, using the protocol and port that you configure. The rules that you define for a listener determine how the load balancer routes requests to the target in one or more target groups|
+|Target | A target is a destination for traffic based on the established listener rules.|
+| Target Group | Each target group routes requests to one or more registered targets using the protocol and port number specified. A target can be registered with multiple target groups. Health checks can be configured on a per target group basis. |
 
+> After the load balancer receives a request, it evaluates the listener rules in priority order to determine which rule to apply, and then selects a target from the target group for the rule action.
 
+##### Creating the Application Load Balancer
+```sh
+resource "aws_lb" "alb" {
+  name               = "alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.all-traffic.id]
+  subnets            = [aws_subnet.public1.id, aws_subnet.public2.id]
+  enable_deletion_protection = false
+  depends_on = [ aws_lb_target_group.tg-one ]
+  tags = {
+     Name = "${var.project}-alb"
+   }
+}
 
+output "alb-dns-name" {
+  value = aws_lb.alb.dns_name
+} 
+```
 
+# 12. Creating Launch Configuration
+##### Creating two user data for launch configuration first.
 
+```sh
+#######################
+# First User Data
+#######################
+#!/bin/bash
 
+echo "ClientAliveInterval 60" >> /etc/ssh/sshd_config
+echo "LANG=en_US.utf-8" >> /etc/environment
+echo "LC_ALL=en_US.utf-8" >> /etc/environment
+service sshd restart
 
+echo "password123" | passwd root --stdin
+sed  -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+service sshd restart
 
+yum install httpd php -y
+systemctl enable httpd
+systemctl restart httpd
 
+cat <<EOF > /var/www/html/index.php
+<?php
+\$output = shell_exec('echo $HOSTNAME');
+echo "<h1><center><pre>\$output</pre></center></h1>";
+echo "<h1><center><pre>  Server 1 </pre></center></h1>";
+?>
+EOF
 
+#######################
+# Second User Data
+#######################
+#!/bin/bash
 
+echo "ClientAliveInterval 60" >> /etc/ssh/sshd_config
+echo "LANG=en_US.utf-8" >> /etc/environment
+echo "LC_ALL=en_US.utf-8" >> /etc/environment
+service sshd restart
 
+echo "password123" | passwd root --stdin
+sed  -i 's/#PermitRootLogin yes/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+service sshd restart
 
+yum install httpd php -y
+systemctl enable httpd
+systemctl restart httpd
 
+cat <<EOF > /var/www/html/index.php
+<?php
+\$output = shell_exec('echo $HOSTNAME');
+echo "<h1><center><pre>\$output</pre></center></h1>";
+echo "<h1><center><pre>  Server 2 </pre></center></h1>";
+?>
+EOF
+```
 
+##### Launch Configuration
+```sh
+#######################################################
+# First Launch Configuration
+#######################################################
 
+resource "aws_launch_configuration" "LC-one" {
+  
+  name              = "LC1"
+  image_id          = var.ami
+  instance_type     = var.type
+  key_name          = aws_key_pair.key.id
+  security_groups   = [aws_security_group.all-traffic.id]
+  user_data         = file("11-setup.sh")                #==========> First User Data File
+  lifecycle {
+    create_before_destroy = true
+  }
+}
 
+#######################################################
+# Second Launch Configuration
+#######################################################
 
+resource "aws_launch_configuration" "LC-two" {
+  
+  name              = "LC2"
+  image_id          = var.ami
+  instance_type     = var.type
+  key_name          = aws_key_pair.key.id
+  security_groups   = [aws_security_group.all-traffic.id]
+  user_data         = file("12-setup.sh")              #==========> Second User Data File
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
 
+# 13. Creating Target Group and Listeners
+> Creating 2 target group so that we can forward the traffic
+```sh
+############################
+# Target Group One
+############################
 
+resource "aws_lb_target_group" "tg-one" {
+  name     = "alb-tg-one"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc.id
+  load_balancing_algorithm_type = "round_robin"
+  deregistration_delay = 60
 
+  health_check {
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    interval            = 30
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = 200
+    }
+lifecycle {
+    create_before_destroy = true
+  }
+}
 
+############################
+# Target Group Two
+############################
 
+resource "aws_lb_target_group" "tg-two" {
+  name     = "alb-tg-two"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc.id
+  load_balancing_algorithm_type = "round_robin"
+  deregistration_delay = 60
 
+  health_check {
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    interval            = 30
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = 200
+}
+lifecycle {
+    create_before_destroy = true
+  }
+}
+```
+##### ALB - http listener - default action
+```sh
+resource "aws_lb_listener" "listner" {
+  load_balancer_arn = aws_lb.alb.id
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = " No such Site Found"
+      status_code  = "200"
+   }
+}
+}
+```
+##### ALB - http listener - Adding Rules
+```sh
+##################################################
+# Forwording rule - one
+#
+# Considering hostname as blog-one.com
+###################################################
+resource "aws_lb_listener_rule" "rule-one" {
 
+  listener_arn = aws_lb_listener.listner.id
+  priority     = 5
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg-one.arn
+  }
+  condition {
+    host_header {
+      values = ["blog-one.com"]
+    }
+  }
+}
 
+##################################################
+# Forwording rule - two
+#
+# Considering hostname as blog-two.com
+###################################################
+resource "aws_lb_listener_rule" "rule-two" {
+
+  listener_arn = aws_lb_listener.listner.id
+  priority     = 6
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg-two.arn
+  }
+  condition {
+    host_header {
+      values = ["blog-two.com"]
+    }
+  }
+}
+```
+
+# 14. Creating Auto Scale Group
+```sh
+#######################################################
+# First ASG
+#######################################################
+resource "aws_autoscaling_group" "asg-one" {
+
+  launch_configuration    = aws_launch_configuration.LC-one.id
+  vpc_zone_identifier     = [aws_subnet.public1.id, aws_subnet.public2.id]
+  health_check_type       = "EC2"
+  min_size                = var.asg_count
+  max_size                = var.asg_count
+  desired_capacity        = var.asg_count
+  wait_for_elb_capacity   = var.asg_count
+  target_group_arns       = [aws_lb_target_group.tg-one.arn]
+  tag {
+    key = "Name"
+    propagate_at_launch = true
+    value = "one-asg"
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+#######################################################
+# Second ASG
+#######################################################
+resource "aws_autoscaling_group" "asg-two" {
+
+  launch_configuration    = aws_launch_configuration.LC-two.id
+  vpc_zone_identifier     = [aws_subnet.public1.id, aws_subnet.public2.id]
+  health_check_type       = "EC2"
+  min_size                = var.asg_count
+  max_size                = var.asg_count
+  desired_capacity        = var.asg_count
+  wait_for_elb_capacity   = var.asg_count
+  target_group_arns       = [aws_lb_target_group.tg-two.arn]
+  tag {
+    key = "Name"
+    propagate_at_launch = true
+    value = "two-asg"
+  }
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
 
 # Conclusion
-Here is a simple document on how to use Terraform to build an AWS Classic Load Balancer
+Here is a simple document on how to use Terraform to build an AWS Application Load Balancer
