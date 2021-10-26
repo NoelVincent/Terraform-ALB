@@ -17,7 +17,6 @@ resource "aws_lb_listener" "listner" {
       status_code  = "200"
    }
 }
-    depends_on = [aws_lb.alb]
 }
 
 
